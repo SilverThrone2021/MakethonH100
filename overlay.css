@@ -57,3 +57,15 @@
   0%, 100% { box-shadow: 0 0 10px rgba(68,255,68,0.6); }
   50% { box-shadow: 0 0 20px rgba(68,255,68,1); }
 }
+
+/* Perplexity intercept.ai overlay styles */
+.intercept-btn img { display: block; }
+.intercept-notif { display: inline-flex; }
+.intercept-tooltip { pointer-events: none; }
+
+.intercept-correct { transition: background 0.15s ease; }
+.intercept-incorrect { transition: background 0.15s ease; }
+
+/* make overlay not block page interactions except the button */
+#intercept-overlay-root { pointer-events: none; }
+#intercept-overlay-root .intercept-btn { pointer-events: auto; }
