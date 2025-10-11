@@ -1,21 +1,13 @@
 {
   "manifest_version": 3,
-  "name": "YouTube Shorts Deepfake Overlay",
-  "version": "1.0.0",
-  "description": "Overlay deepfake detection badge on YouTube Shorts",
-  "permissions": [
-    "storage",
-    "activeTab"
-  ],
-  "host_permissions": [
-    "https://www.youtube.com/*",
-    "https://facile-jaiden-jadishly.ngrok-free.dev/*"
-  ],
-  "content_scripts": [
-    {
-      "matches": ["https://www.youtube.com/*"],
-      "js": ["content.js"],
-      "css": ["overlay.css"]
-    }
-  ]
+  "name": "Perplexity Source Checker",
+  "version": "1.0",
+  "permissions": ["activeTab", "scripting"],
+  "action": {
+    "default_popup": "popup.html"
+  },
+  "content_scripts": [{
+    "matches": ["*://*.perplexity.ai/*"],
+    "js": ["content.js"]
+  }]
 }

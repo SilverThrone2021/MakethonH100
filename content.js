@@ -1,95 +1,76 @@
-const API_URL = "https://facile-jaiden-jadishly.ngrok-free.dev/analyze";
-
-function isYouTubeShort() {
-    return window.location.pathname.startsWith('/shorts/');
-}
-
-function getVideoId() {
-    const match = window.location.pathname.match(/\/shorts\/([^\/]+)/);
-    return match ? match[1] : null;
-}
-
-function getShortUrl(videoId) {
-    return `https://youtube.com/shorts/${videoId}`;
-}
-
-function overlayBadge(prediction = "FAKE", confidence = 0.5) {
-    document.querySelectorAll('.deepfake-overlay').forEach(e => e.remove());
+// Extract answer and sources from Perplexity
+function extractPerplexityData() {
+  console.log("Extracting Perplexity data...");
+  
+  // Extract the main answer text from the prose container
+  const answerElements = document.querySelectorAll('div.prose p, div.prose li');
+  const answer = Array.from(answerElements)
+    .map(el => el.innerText)
+    .join('\n')
+    .trim();
+  
+  console.log("Found answer:", answer.substring(0, 100) + "...");
+  
+  // Extract sources - look for citation links
+  // Perplexity typically shows sources as numbered citations [1], [2], etc.
+  // and has a sources section
+  const sources = [];
+  const seenUrls = new Set();
+  
+  // Method 1: Find citation links (usually superscript numbers)
+  const citationLinks = document.querySelectorAll('a[href^="http"]');
+  
+  citationLinks.forEach(link => {
+    const url = link.href;
+    const title = link.innerText || link.getAttribute('aria-label') || 'Source';
     
-    const overlay = document.createElement('div');
-    overlay.className = 'deepfake-overlay';
-    overlay.innerHTML = `
-        <div class="deepfake-badge ${prediction.toLowerCase()}">
-            <span class="deepfake-status">
-                ${prediction === "FAKE" ? "⚠️ Deepfake" : prediction === "REAL" ? "✅ Real" : "🔍 Analyzing..."}
-            </span>
-            <span class="deepfake-confidence">
-                (${Math.round(confidence * 100)}% confidence)
-            </span>
-        </div>
-    `;
-
-    const container = document.querySelector('ytd-reel-video-renderer[is-active]') ||
-                      document.querySelector('#shorts-container') ||
-                      document.querySelector('#player');
-
-    if (!container) {
-        console.warn("Deepfake overlay container not found");
-        return;
+    // Avoid duplicates and non-article links
+    if (!seenUrls.has(url) && 
+        !url.includes('perplexity.ai') &&
+        !url.includes('twitter.com') &&
+        !url.includes('facebook.com')) {
+      seenUrls.add(url);
+      sources.push({ url, title: title.trim() });
     }
-
-    container.style.position = "relative";
-    overlay.style.position = "absolute";
-    overlay.style.top = "20px";
-    overlay.style.right = "20px";
-    container.appendChild(overlay);
+  });
+  
+  // Method 2: Look for a dedicated sources section
+  const sourcesSection = document.querySelector('[class*="source"]');
+  if (sourcesSection) {
+    const sourceLinks = sourcesSection.querySelectorAll('a[href^="http"]');
+    sourceLinks.forEach(link => {
+      const url = link.href;
+      const title = link.innerText || link.textContent || 'Source';
+      
+      if (!seenUrls.has(url) && !url.includes('perplexity.ai')) {
+        seenUrls.add(url);
+        sources.push({ url, title: title.trim() });
+      }
+    });
+  }
+  
+  console.log("Found sources:", sources);
+  
+  return { 
+    answer: answer || "No answer found", 
+    sources: sources.length > 0 ? sources : [{url: "https://example.com", title: "No sources found"}]
+  };
 }
 
-function showLoading() {
-    overlayBadge("ANALYZING...", 0);
-}
+// Test extraction immediately when script loads (for debugging)
+console.log("Content script loaded on:", window.location.href);
 
-async function analyzeShort(videoUrl) {
-    showLoading();
-    try {
-        const res = await fetch(API_URL, {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ video_url: videoUrl })
-        });
+// Listen for requests from popup
+chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
+  console.log("Message received:", request);
+  
+  if (request.action === "extractData") {
+    const data = extractPerplexityData();
+    sendResponse(data);
+  }
+  
+  return true; // Keep message channel open for async response
+});
 
-        const data = await res.json();
-
-        if (data.verdict && data.confidence !== undefined) {
-            overlayBadge(data.verdict.toUpperCase(), data.confidence);
-        } else {
-            overlayBadge("ERROR", 0);
-            console.error("Invalid API response:", data);
-        }
-    } catch (e) {
-        overlayBadge("ERROR", 0);
-        console.error("Error analyzing video:", e);
-    }
-}
-
-let lastVideoId = null;
-
-function checkAndAnalyze() {
-    if (!isYouTubeShort()) return;
-    const videoId = getVideoId();
-    if (!videoId || videoId === lastVideoId) return;
-
-    lastVideoId = videoId;
-    const videoUrl = getShortUrl(videoId);
-    analyzeShort(videoUrl);
-}
-
-let lastHref = location.href;
-new MutationObserver(() => {
-    if (location.href !== lastHref) {
-        lastHref = location.href;
-        checkAndAnalyze();
-    }
-}).observe(document.body, { childList: true, subtree: true });
-
-checkAndAnalyze();
+// Also add a way to manually trigger from console for testing
+window.testExtraction = extractPerplexityData;
