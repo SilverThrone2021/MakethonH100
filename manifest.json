@@ -2,12 +2,26 @@
   "manifest_version": 3,
   "name": "Perplexity Source Checker",
   "version": "1.0",
-  "permissions": ["activeTab", "scripting"],
+  "description": "Analyzes sources from Perplexity AI for AI-generated content",
+  "permissions": [
+    "activeTab",
+    "scripting"
+  ],
+  "host_permissions": [
+    "https://*.ngrok-free.app/*",
+    "https://*.ngrok.io/*",
+    "http://localhost:5000/*",
+    "http://127.0.0.1:5000/*"
+  ],
   "action": {
     "default_popup": "popup.html"
   },
   "content_scripts": [{
-    "matches": ["*://*.perplexity.ai/*"],
-    "js": ["content.js"]
+    "matches": [
+      "*://*.perplexity.ai/*",
+      "*://perplexity.ai/*"
+    ],
+    "js": ["content.js"],
+    "run_at": "document_idle"
   }]
 }

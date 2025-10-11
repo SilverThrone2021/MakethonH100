@@ -14,16 +14,51 @@ document.getElementById('analyze').addEventListener('click', async () => {
     // Get data from content script
     const [tab] = await chrome.tabs.query({active: true, currentWindow: true});
     
+    // Check if we're on a Perplexity page
+    if (!tab.url.includes('perplexity.ai')) {
+      resultsDiv.innerHTML = '<p style="color: red;">Please navigate to a Perplexity.ai search results page first.</p>';
+      isAnalyzing = false;
+      return;
+    }
+    
     // Use Promise wrapper to avoid multiple callbacks
-    const data = await new Promise((resolve, reject) => {
-      chrome.tabs.sendMessage(tab.id, {action: "extractData"}, (response) => {
-        if (chrome.runtime.lastError) {
-          reject(new Error(chrome.runtime.lastError.message));
-        } else {
-          resolve(response);
-        }
+    let data;
+    try {
+      data = await new Promise((resolve, reject) => {
+        chrome.tabs.sendMessage(tab.id, {action: "extractData"}, (response) => {
+          if (chrome.runtime.lastError) {
+            reject(new Error(chrome.runtime.lastError.message));
+          } else {
+            resolve(response);
+          }
+        });
       });
-    });
+    } catch (msgError) {
+      // If message fails, try reinjecting the content script
+      console.log("Content script not responding, trying to reinject...");
+      try {
+        await chrome.scripting.executeScript({
+          target: { tabId: tab.id },
+          files: ['content.js']
+        });
+        
+        // Wait a bit for script to load
+        await new Promise(resolve => setTimeout(resolve, 500));
+        
+        // Try again
+        data = await new Promise((resolve, reject) => {
+          chrome.tabs.sendMessage(tab.id, {action: "extractData"}, (response) => {
+            if (chrome.runtime.lastError) {
+              reject(new Error(chrome.runtime.lastError.message));
+            } else {
+              resolve(response);
+            }
+          });
+        });
+      } catch (reinjectError) {
+        throw new Error("Could not communicate with page. Please refresh the Perplexity page and try again.");
+      }
+    }
     
     console.log("Received data from content script:", data);
     
