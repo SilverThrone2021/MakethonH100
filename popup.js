@@ -8,20 +8,34 @@ document.getElementById('analyze').addEventListener('click', async () => {
   
   isAnalyzing = true;
   const resultsDiv = document.getElementById('results');
-  resultsDiv.innerHTML = '<p>Loading...</p>';
+  const btn = document.getElementById('analyze');
+  
+  btn.disabled = true;
+  btn.textContent = 'Analyzing...';
+  
+  resultsDiv.innerHTML = `
+    <div class="loading-state">
+      <div class="spinner"></div>
+      <div class="loading-text">Initializing...</div>
+    </div>
+  `;
   
   try {
-    // Get data from content script
     const [tab] = await chrome.tabs.query({active: true, currentWindow: true});
     
-    // Check if we're on a Perplexity page
     if (!tab.url.includes('perplexity.ai')) {
-      resultsDiv.innerHTML = '<p style="color: red;">Please navigate to a Perplexity.ai search results page first.</p>';
+      resultsDiv.innerHTML = `
+        <div class="error-message">
+          <div class="error-title">⚠️ Wrong Page</div>
+          Please navigate to a Perplexity.ai search results page first.
+        </div>
+      `;
+      btn.disabled = false;
+      btn.textContent = 'Analyze Sources';
       isAnalyzing = false;
       return;
     }
     
-    // Use Promise wrapper to avoid multiple callbacks
     let data;
     try {
       data = await new Promise((resolve, reject) => {
@@ -34,18 +48,17 @@ document.getElementById('analyze').addEventListener('click', async () => {
         });
       });
     } catch (msgError) {
-      // If message fails, try reinjecting the content script
       console.log("Content script not responding, trying to reinject...");
+      resultsDiv.querySelector('.loading-text').textContent = 'Reconnecting...';
+      
       try {
         await chrome.scripting.executeScript({
           target: { tabId: tab.id },
           files: ['content.js']
         });
         
-        // Wait a bit for script to load
         await new Promise(resolve => setTimeout(resolve, 500));
         
-        // Try again
         data = await new Promise((resolve, reject) => {
           chrome.tabs.sendMessage(tab.id, {action: "extractData"}, (response) => {
             if (chrome.runtime.lastError) {
@@ -63,17 +76,27 @@ document.getElementById('analyze').addEventListener('click', async () => {
     console.log("Received data from content script:", data);
     
     if (!data || !data.sources) {
-      resultsDiv.innerHTML = '<p style="color: red;">No sources found on this page. Make sure you\'re on a Perplexity.ai results page.</p>';
+      resultsDiv.innerHTML = `
+        <div class="error-message">
+          <div class="error-title">⚠️ No Sources Found</div>
+          No sources found on this page. Make sure you're on a Perplexity.ai results page with search results.
+        </div>
+      `;
+      btn.disabled = false;
+      btn.textContent = 'Analyze Sources';
       isAnalyzing = false;
       return;
     }
     
-    resultsDiv.innerHTML = '<p>Analyzing ' + data.sources.length + ' sources... (this may take 20-30 seconds)</p>';
+    resultsDiv.innerHTML = `
+      <div class="loading-state">
+        <div class="spinner"></div>
+        <div class="loading-text">Analyzing ${data.sources.length} source${data.sources.length !== 1 ? 's' : ''}...</div>
+      </div>
+    `;
     
-    // Send to backend for analysis
     console.log("Sending to backend:", data.sources);
     
-    // Your ngrok URL
     const BACKEND_URL = 'https://facile-jaiden-jadishly.ngrok-free.dev';
     
     const response = await fetch(`${BACKEND_URL}/analyze`, {
@@ -93,15 +116,26 @@ document.getElementById('analyze').addEventListener('click', async () => {
     console.log("Results:", results);
     
     displayResults(results);
+    btn.disabled = false;
+    btn.textContent = 'Analyze Sources';
     isAnalyzing = false;
     
   } catch (error) {
     console.error("Error:", error);
-    resultsDiv.innerHTML = `<p style="color: red;">Error: ${error.message}</p>
-      <p style="font-size: 12px;">Make sure:<br>
-      1. Flask server is running (python app.py)<br>
-      2. You're on perplexity.ai<br>
-      3. Check browser console (F12) for details</p>`;
+    resultsDiv.innerHTML = `
+      <div class="error-message">
+        <div class="error-title">⚠️ Analysis Failed</div>
+        ${escapeHtml(error.message)}
+        <div style="margin-top: 10px; font-size: 11px; opacity: 0.8;">
+          <strong>Troubleshooting:</strong><br>
+          • Ensure Flask server is running<br>
+          • Verify you're on perplexity.ai<br>
+          • Check browser console (F12)
+        </div>
+      </div>
+    `;
+    btn.disabled = false;
+    btn.textContent = 'Analyze Sources';
     isAnalyzing = false;
   }
 });
@@ -110,7 +144,12 @@ function displayResults(results) {
   const container = document.getElementById('results');
   
   if (!results || results.length === 0) {
-    container.innerHTML = '<p>No results to display</p>';
+    container.innerHTML = `
+      <div class="empty-state">
+        <div class="empty-icon">📭</div>
+        <div class="empty-text">No results to display</div>
+      </div>
+    `;
     return;
   }
   
@@ -118,28 +157,88 @@ function displayResults(results) {
     const analysis = r.analysis || {};
     const likelihood = analysis.ai_likelihood || 0;
     const riskClass = likelihood > 70 ? 'high-risk' : likelihood > 40 ? 'medium-risk' : '';
+    const riskBadgeClass = likelihood > 70 ? 'high' : likelihood > 40 ? 'medium' : 'low';
+    const riskLabel = likelihood > 70 ? 'High' : likelihood > 40 ? 'Med' : 'Low';
+    const fillClass = likelihood > 70 ? 'high' : likelihood > 40 ? 'medium' : 'low';
+    
+    if (analysis.error) {
+      return `
+        <div class="source-card">
+          <div class="source-header">
+            <div class="source-title">${escapeHtml(r.title || 'Unknown Source')}</div>
+          </div>
+          <a href="${escapeHtml(r.url)}" target="_blank" class="source-url">${escapeHtml(truncateUrl(r.url, 40))}</a>
+          <div class="error-message" style="margin: 0;">
+            <div class="error-title">⚠️ Error</div>
+            ${escapeHtml(analysis.error)}
+          </div>
+        </div>
+      `;
+    }
     
     return `
-      <div class="source ${riskClass}">
-        <strong>${escapeHtml(r.title || 'Unknown')}</strong><br>
-        <a href="${escapeHtml(r.url)}" target="_blank" style="font-size: 11px; color: #666;">${escapeHtml(r.url.substring(0, 50))}...</a><br>
-        <br>
-        ${analysis.error ? 
-          `<span style="color: red;">Error: ${escapeHtml(analysis.error)}</span>` :
-          `
-          <strong>AI Likelihood:</strong> ${likelihood}%<br>
-          <strong>Quality:</strong> ${escapeHtml(analysis.quality || 'N/A')}<br>
-          <strong>Has Fluff:</strong> ${escapeHtml(analysis.has_fluff || 'N/A')}<br>
-          <em style="font-size: 12px;">${escapeHtml(analysis.reasoning || 'No reasoning provided')}</em>
-          `
-        }
+      <div class="source-card ${riskClass}">
+        <div class="source-header">
+          <div class="source-title">${escapeHtml(r.title || 'Unknown Source')}</div>
+          <span class="risk-badge ${riskBadgeClass}">${riskLabel}</span>
+        </div>
+        <a href="${escapeHtml(r.url)}" target="_blank" class="source-url">${escapeHtml(truncateUrl(r.url, 40))}</a>
+        
+        <div class="metrics-grid">
+          <div class="metric-box">
+            <div class="metric-label">AI Detection</div>
+            <div class="metric-value">
+              <span class="ai-percentage">${likelihood}%</span>
+            </div>
+            <div class="percentage-bar">
+              <div class="percentage-fill ${fillClass}" style="width: 0%"></div>
+            </div>
+          </div>
+          <div class="metric-box">
+            <div class="metric-label">Quality</div>
+            <div class="metric-value">${escapeHtml(analysis.quality || 'N/A')}</div>
+          </div>
+        </div>
+        
+        <div class="metrics-grid">
+          <div class="metric-box">
+            <div class="metric-label">Fluff Content</div>
+            <div class="metric-value">${escapeHtml(analysis.has_fluff || 'N/A')}</div>
+          </div>
+          <div class="metric-box">
+            <div class="metric-label">Risk Level</div>
+            <div class="metric-value">${riskLabel} Risk</div>
+          </div>
+        </div>
+        
+        ${analysis.reasoning ? `
+          <div class="reasoning">${escapeHtml(analysis.reasoning)}</div>
+        ` : ''}
       </div>
     `;
   }).join('');
+  
+  // Animate the percentage bars after render
+  setTimeout(() => {
+    results.forEach((r, idx) => {
+      const analysis = r.analysis || {};
+      const likelihood = analysis.ai_likelihood || 0;
+      const bars = document.querySelectorAll('.percentage-fill');
+      if (bars[idx]) {
+        bars[idx].style.width = likelihood + '%';
+      }
+    });
+  }, 100);
 }
 
 function escapeHtml(text) {
   const div = document.createElement('div');
   div.textContent = text;
   return div.innerHTML;
+}
+
+function truncateUrl(url, maxLength) {
+  if (url.length <= maxLength) return url;
+  const start = url.substring(0, maxLength - 3);
+  return start + '...';
 }

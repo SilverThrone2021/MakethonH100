@@ -1,27 +1,43 @@
 {
   "manifest_version": 3,
-  "name": "Perplexity Source Checker",
-  "version": "1.0",
-  "description": "Analyzes sources from Perplexity AI for AI-generated content",
+  "name": "Intercept.AI",
+  "version": "1.0.0",
+  "description": "Overlay misquote detection in Perplexity and analyze sources for AI-generated content",
   "permissions": [
+    "storage",
     "activeTab",
     "scripting"
   ],
   "host_permissions": [
+    "https://www.youtube.com/*",
+    "https://facile-jaiden-jadishly.ngrok-free.dev/*",
     "https://*.ngrok-free.app/*",
     "https://*.ngrok.io/*",
     "http://localhost:5000/*",
-    "http://127.0.0.1:5000/*"
+    "http://127.0.0.1:5000/*",
+    "https://www.perplexity.ai/*",
+    "https://perplexity.ai/*"
+  ],
+  "web_accessible_resources": [
+    {
+      "resources": ["logo.png"],
+      "matches": ["<all_urls>"]
+    }
   ],
   "action": {
     "default_popup": "popup.html"
   },
-  "content_scripts": [{
-    "matches": [
-      "*://*.perplexity.ai/*",
-      "*://perplexity.ai/*"
-    ],
-    "js": ["content.js"],
-    "run_at": "document_idle"
-  }]
+  "content_scripts": [
+    {
+      "matches": ["https://www.youtube.com/*"],
+      "js": ["content.js"],
+      "css": ["overlay.css"]
+    },
+    {
+      "matches": ["https://www.perplexity.ai/*", "https://perplexity.ai/*", "*://*.perplexity.ai/*", "*://perplexity.ai/*"],
+      "js": ["content.js"],
+      "css": ["overlay.css"],
+      "run_at": "document_idle"
+    }
+  ]
 }
