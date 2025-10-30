@@ -1,76 +1,65 @@
-// Extract answer and sources from Perplexity
+// Function to extract sources from Perplexity.ai
 function extractPerplexityData() {
-  console.log("Extracting Perplexity data...");
-  
-  // Extract the main answer text from the prose container
-  const answerElements = document.querySelectorAll('div.prose p, div.prose li');
-  const answer = Array.from(answerElements)
-    .map(el => el.innerText)
-    .join('\n')
-    .trim();
-  
-  console.log("Found answer:", answer.substring(0, 100) + "...");
-  
-  // Extract sources - look for citation links
-  // Perplexity typically shows sources as numbered citations [1], [2], etc.
-  // and has a sources section
-  const sources = [];
-  const seenUrls = new Set();
-  
-  // Method 1: Find citation links (usually superscript numbers)
-  const citationLinks = document.querySelectorAll('a[href^="http"]');
-  
-  citationLinks.forEach(link => {
-    const url = link.href;
-    const title = link.innerText || link.getAttribute('aria-label') || 'Source';
-    
-    // Avoid duplicates and non-article links
-    if (!seenUrls.has(url) && 
-        !url.includes('perplexity.ai') &&
-        !url.includes('twitter.com') &&
-        !url.includes('facebook.com')) {
-      seenUrls.add(url);
-      sources.push({ url, title: title.trim() });
-    }
-  });
-  
-  // Method 2: Look for a dedicated sources section
-  const sourcesSection = document.querySelector('[class*="source"]');
-  if (sourcesSection) {
-    const sourceLinks = sourcesSection.querySelectorAll('a[href^="http"]');
-    sourceLinks.forEach(link => {
-      const url = link.href;
-      const title = link.innerText || link.textContent || 'Source';
-      
-      if (!seenUrls.has(url) && !url.includes('perplexity.ai')) {
-        seenUrls.add(url);
-        sources.push({ url, title: title.trim() });
-      }
+    const sources = [];
+    const seenUrls = new Set();
+
+    // Strategy 1: Target the specific source containers
+    // Perplexity often uses a wrapper for each source with a title and a link.
+    const sourceWrappers = document.querySelectorAll('div.mt-lg a.block, div[data-source] a');
+
+    sourceWrappers.forEach(link => {
+        const url = link.href;
+        if (url && !seenUrls.has(url) && !url.includes('perplexity.ai')) {
+            seenUrls.add(url);
+
+            // Try to find a more descriptive title
+            const titleElement = link.querySelector('div.text-sm, span.truncate');
+            const title = titleElement ? titleElement.textContent.trim() : (link.textContent.trim() || new URL(url).hostname);
+
+            sources.push({ url, title });
+        }
     });
-  }
-  
-  console.log("Found sources:", sources);
-  
-  return { 
-    answer: answer || "No answer found", 
-    sources: sources.length > 0 ? sources : [{url: "https://example.com", title: "No sources found"}]
-  };
+
+    // Strategy 2: Fallback to finding citation links if the first method fails
+    // These are often numbered links like [1], [2], etc.
+    if (sources.length === 0) {
+        const citationLinks = document.querySelectorAll('a[href*="perplexity.ai/s/"]');
+        citationLinks.forEach(link => {
+            const url = link.href;
+            if (url && !seenUrls.has(url)) {
+                seenUrls.add(url);
+                const title = link.textContent.trim() || new URL(url).hostname;
+                sources.push({ url, title });
+            }
+        });
+    }
+
+    // Strategy 3: A more generic fallback for any external link in the main content area
+    if (sources.length === 0) {
+        const contentArea = document.querySelector('div.prose, main');
+        if (contentArea) {
+            const links = contentArea.querySelectorAll('a[href^="http"]');
+            links.forEach(link => {
+                const url = link.href;
+                // Exclude social media and other non-article links
+                const excludedDomains = ['perplexity.ai', 'twitter.com', 'facebook.com', 'youtube.com'];
+                if (url && !seenUrls.has(url) && !excludedDomains.some(domain => url.includes(domain))) {
+                    seenUrls.add(url);
+                    const title = link.textContent.trim() || new URL(url).hostname;
+                    sources.push({ url, title });
+                }
+            });
+        }
+    }
+
+    return { sources };
 }
 
-// Test extraction immediately when script loads (for debugging)
-console.log("Content script loaded on:", window.location.href);
-
-// Listen for requests from popup
+// Listen for messages from the popup/side panel
 chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
-  console.log("Message received:", request);
-  
-  if (request.action === "extractData") {
-    const data = extractPerplexityData();
-    sendResponse(data);
-  }
-  
-  return true; // Keep message channel open for async response
+    if (request.action === "extractData") {
+        const data = extractPerplexityData();
+        sendResponse(data);
+    }
+    return true; // Keep the message channel open for the asynchronous response
 });
-
-// Also add a way to manually trigger from console for testing
-window.testExtraction = extractPerplexityData;

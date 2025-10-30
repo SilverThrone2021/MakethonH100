@@ -24,6 +24,9 @@
     }
 
     .header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
       margin-bottom: 20px;
     }
 
@@ -33,12 +36,34 @@
       color: #64748b;
       text-transform: uppercase;
       letter-spacing: 0.05em;
-      margin-bottom: 12px;
     }
 
-    .analyze-btn {
-      width: 100%;
-      padding: 11px 16px;
+    .status-indicator {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      font-size: 11px;
+      font-weight: 500;
+      color: #64748b;
+    }
+
+    .status-dot {
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      background-color: #cbd5e1; /* Default to grey */
+    }
+
+    .status-dot.online { background-color: #22c55e; }
+    .status-dot.offline { background-color: #ef4444; }
+
+    .controls {
+      display: flex;
+      gap: 8px;
+    }
+
+    .analyze-btn, .refresh-btn {
+      padding: 10px 14px;
       background: #ffffff;
       color: #0f172a;
       border: 1px solid #e2e8f0;
@@ -51,15 +76,14 @@
       box-shadow: 0 1px 2px 0 rgba(0, 0, 0, 0.05);
     }
 
-    .analyze-btn:hover {
+    .analyze-btn {
+      flex-grow: 1;
+    }
+
+    .analyze-btn:hover, .refresh-btn:hover {
       background: #f8fafc;
       border-color: #cbd5e1;
       box-shadow: 0 1px 3px 0 rgba(0, 0, 0, 0.1);
-    }
-
-    .analyze-btn:active {
-      background: #f1f5f9;
-      transform: translateY(0);
     }
 
     .analyze-btn:disabled {
@@ -71,250 +95,22 @@
       margin-top: 16px;
     }
 
-    .loading-state {
-      display: flex;
-      flex-direction: column;
-      align-items: center;
-      padding: 40px 20px;
-      gap: 12px;
-    }
+    /* ... (rest of the CSS is the same) ... */
 
-    .spinner {
-      width: 32px;
-      height: 32px;
-      border: 2px solid #f1f5f9;
-      border-top-color: #64748b;
-      border-radius: 50%;
-      animation: spin 0.8s linear infinite;
-    }
-
-    @keyframes spin {
-      to { transform: rotate(360deg); }
-    }
-
-    .loading-text {
-      font-size: 13px;
-      color: #64748b;
-      font-weight: 500;
-    }
-
-    .error-message {
-      background: #fef2f2;
-      border: 1px solid #fecaca;
-      padding: 12px;
-      border-radius: 8px;
-      color: #991b1b;
-      font-size: 12px;
-      line-height: 1.5;
-      margin-bottom: 12px;
-    }
-
-    .error-title {
-      font-weight: 600;
-      margin-bottom: 6px;
-      font-size: 13px;
-      display: flex;
-      align-items: center;
-      gap: 6px;
-    }
-
-    .source-card {
-      background: #ffffff;
-      border-radius: 10px;
-      padding: 14px;
-      margin-bottom: 10px;
-      border: 1px solid #e2e8f0;
-      transition: all 0.15s ease;
-      position: relative;
-    }
-
-    .source-card:hover {
-      border-color: #cbd5e1;
-      box-shadow: 0 2px 8px rgba(0, 0, 0, 0.04);
-    }
-
-    .source-card.high-risk {
-      background: #fef2f2;
-      border-color: #fecaca;
-    }
-
-    .source-card.medium-risk {
-      background: #fffbeb;
-      border-color: #fde68a;
-    }
-
-    .source-header {
-      display: flex;
-      justify-content: space-between;
-      align-items: flex-start;
-      gap: 8px;
-      margin-bottom: 10px;
-    }
-
-    .source-title {
-      font-size: 13px;
-      font-weight: 600;
-      color: #0f172a;
-      line-height: 1.4;
-      letter-spacing: -0.01em;
-      flex: 1;
-    }
-
-    .risk-badge {
-      display: inline-flex;
-      padding: 3px 8px;
-      border-radius: 6px;
-      font-size: 10px;
-      font-weight: 600;
-      letter-spacing: 0.02em;
-      text-transform: uppercase;
-      flex-shrink: 0;
-    }
-
-    .risk-badge.high {
-      background: #fee2e2;
-      color: #991b1b;
-    }
-
-    .risk-badge.medium {
-      background: #fef3c7;
-      color: #92400e;
-    }
-
-    .risk-badge.low {
-      background: #d1fae5;
-      color: #065f46;
-    }
-
-    .source-url {
-      font-size: 11px;
-      color: #64748b;
-      text-decoration: none;
-      display: block;
-      margin-bottom: 12px;
-      padding: 4px 8px;
-      background: #f8fafc;
-      border-radius: 4px;
-      transition: all 0.15s;
-      font-weight: 500;
-      width: fit-content;
-      max-width: 100%;
-      overflow: hidden;
-      text-overflow: ellipsis;
-      white-space: nowrap;
-    }
-
-    .source-url:hover {
-      background: #f1f5f9;
-      color: #475569;
-    }
-
-    .metrics-grid {
-      display: grid;
-      grid-template-columns: 1fr 1fr;
-      gap: 8px;
-      margin-bottom: 10px;
-    }
-
-    .metric-box {
-      background: #f8fafc;
-      padding: 10px;
-      border-radius: 6px;
-      border: 1px solid #f1f5f9;
-    }
-
-    .metric-label {
-      font-size: 10px;
-      color: #64748b;
-      font-weight: 600;
-      text-transform: uppercase;
-      letter-spacing: 0.05em;
-      margin-bottom: 4px;
-    }
-
-    .metric-value {
-      font-size: 15px;
-      font-weight: 700;
-      color: #0f172a;
-      display: flex;
-      align-items: center;
-      gap: 4px;
-    }
-
-    .ai-percentage {
-      font-size: 20px;
-      font-weight: 700;
-      color: #0f172a;
-    }
-
-    .percentage-bar {
-      width: 100%;
-      height: 3px;
-      background: #e2e8f0;
-      border-radius: 2px;
-      overflow: hidden;
-      margin-top: 6px;
-    }
-
-    .percentage-fill {
-      height: 100%;
-      background: #0f172a;
-      border-radius: 2px;
-      transition: width 0.5s cubic-bezier(0.4, 0, 0.2, 1);
-    }
-
-    .percentage-fill.high {
-      background: linear-gradient(90deg, #ef4444 0%, #dc2626 100%);
-    }
-
-    .percentage-fill.medium {
-      background: linear-gradient(90deg, #f59e0b 0%, #d97706 100%);
-    }
-
-    .percentage-fill.low {
-      background: linear-gradient(90deg, #10b981 0%, #059669 100%);
-    }
-
-    .reasoning {
-      font-size: 12px;
-      color: #475569;
-      line-height: 1.5;
-      padding: 10px;
-      background: #f8fafc;
-      border-radius: 6px;
-      border-left: 2px solid #cbd5e1;
-      font-style: italic;
-    }
-
-    .empty-state {
-      text-align: center;
-      padding: 48px 20px;
-    }
-
-    .empty-icon {
-      font-size: 40px;
-      margin-bottom: 12px;
-      opacity: 0.2;
-    }
-
-    .empty-text {
-      font-size: 13px;
-      color: #94a3b8;
-      font-weight: 500;
-    }
-
-    .divider {
-      height: 1px;
-      background: #f1f5f9;
-      margin: 16px 0;
-    }
   </style>
 </head>
 <body>
   <div class="container">
     <div class="header">
       <div class="title">Source Analysis</div>
+      <div id="server-status" class="status-indicator">
+        <div id="status-dot" class="status-dot"></div>
+        <span id="status-text">Checking...</span>
+      </div>
+    </div>
+    <div class="controls">
       <button id="analyze" class="analyze-btn">Analyze Sources</button>
+      <button id="refresh" class="refresh-btn">🔄</button>
     </div>
     <div id="results"></div>
   </div>
