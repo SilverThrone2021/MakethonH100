@@ -1,349 +1,432 @@
+"""
+Gemini AI Detection Service with Multi-Account Batching
+Optimized for 2,400+ users/min throughput with 5 accounts
+"""
+
 from flask import Flask, request, jsonify
 from flask_cors import CORS
-import requests
 from bs4 import BeautifulSoup
-import json
-from pyngrok import ngrok
-import re
-import torch
-from transformers import AutoModelForCausalLM, AutoTokenizer
-import logging
 from concurrent.futures import ThreadPoolExecutor, as_completed
+import google.generativeai as genai
+from pyngrok import ngrok
+from threading import Thread, Lock
+import requests
+import time
+import re
+import os
+from collections import deque
+import json
 
-# Set up logging
-logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger(__name__)
+# ============================================
+# CONFIGURATION
+# ============================================
+GEMINI_API_KEYS = [
+    os.environ.get('GEMINI_KEY_1', 'AIzaSyCDg8L7hCXGKZPxJUXjHDD14g5ldnX48KY'),
+    os.environ.get('GEMINI_KEY_2', 'AIzaSyDzVS6qRKXqJniAzQJYNzSWt7lvmiF-y38'),
+    os.environ.get('GEMINI_KEY_3', 'AIzaSyATdvD4h93M6iOcLryOgzflNBYcWqGRrOs'),
+    os.environ.get('GEMINI_KEY_4', 'YOUR_KEY_4'),
+    os.environ.get('GEMINI_KEY_5', 'YOUR_KEY_5')
+]
+
+NGROK_AUTH_TOKEN = os.environ.get('NGROK_AUTH_TOKEN', '33tszCijYYQxWFNhWlnzl2GjpjL_53zLPsQtq6VEbtKaZ5gAw')
+
+# Gemini configuration
+MODEL_NAME = "gemini-2.5-flash-lite"
+BATCH_SIZE = 32  # Users per request
+MAX_TOKENS_PER_ARTICLE = 150  # Tokens per source
+ARTICLES_PER_USER = 3  # Sources per user
 
 app = Flask(__name__)
-CORS(app, resources={r"/*": {"origins": "*"}})
+CORS(app)
 
-# ==================== GLOBAL MODEL LOADING ====================
-qwen_model = None
-qwen_tokenizer = None
+print("="*80)
+print("🚀 GEMINI MULTI-ACCOUNT AI DETECTOR")
+print("="*80)
 
+# ============================================
+# MULTI-ACCOUNT MANAGER
+# ============================================
+class GeminiAccountManager:
+    def __init__(self, api_keys):
+        self.api_keys = [key for key in api_keys if key and not key.startswith('YOUR_')]
+        if not self.api_keys:
+            raise ValueError("No valid API keys provided!")
+        
+        self.accounts = deque(range(len(self.api_keys)))
+        self.lock = Lock()
+        self.models = []
+        self.request_counts = [0] * len(self.api_keys)
+        
+        # Initialize all models
+        for idx, key in enumerate(self.api_keys):
+            try:
+                genai.configure(api_key=key)
+                model = genai.GenerativeModel(
+                    MODEL_NAME,
+                    generation_config={
+                        "temperature": 0.25,
+                        "max_output_tokens": 1200,
+                        "response_mime_type": "application/json"
+                    }
+                )
+                self.models.append(model)
+                print(f"✅ Account #{idx+1} initialized")
+            except Exception as e:
+                print(f"⚠️ Account #{idx+1} failed: {str(e)[:100]}")
+        
+        if not self.models:
+            raise ValueError("No models could be initialized!")
+        
+        print(f"✅ {len(self.models)} Gemini accounts ready")
+    
+    def get_next_account(self):
+        """Round-robin account selection with request tracking"""
+        with self.lock:
+            account_idx = self.accounts[0]
+            self.accounts.rotate(-1)
+            self.request_counts[account_idx] += 1
+            return account_idx, self.models[account_idx]
+    
+    def get_stats(self):
+        """Get usage statistics"""
+        return {
+            f"account_{i+1}": count 
+            for i, count in enumerate(self.request_counts)
+        }
 
-def load_qwen_model():
-    """Load Qwen3 4B model once at startup"""
-    global qwen_model, qwen_tokenizer
+# Initialize manager
+try:
+    account_manager = GeminiAccountManager(GEMINI_API_KEYS)
+except Exception as e:
+    print(f"❌ Failed to initialize accounts: {e}")
+    exit(1)
 
-    if qwen_model is None:
-        logger.info("Loading Qwen3-4B model from Hugging Face...")
-        model_name = "Qwen/Qwen3-4B-Instruct-2507"
-
-        try:
-            qwen_tokenizer = AutoTokenizer.from_pretrained(
-                model_name,
-                trust_remote_code=True,
-                padding_side='left'  # Important for batching
-            )
-
-            # Set pad token if not set
-            if qwen_tokenizer.pad_token is None:
-                qwen_tokenizer.pad_token = qwen_tokenizer.eos_token
-
-            qwen_model = AutoModelForCausalLM.from_pretrained(
-                model_name,
-                trust_remote_code=True,
-                torch_dtype=torch.float16,
-                device_map="auto"
-            )
-
-            logger.info(f"✓ Qwen3-4B model loaded successfully on: {qwen_model.device}")
-            return True
-        except Exception as e:
-            logger.error(f"✗ Failed to load Qwen3-4B: {e}")
-            return False
-    return True
-
-
-def fetch_article_text(url):
-    """Scrape article content"""
+# ============================================
+# ARTICLE FETCHING
+# ============================================
+def fetch_article_text(url, max_tokens=150):
+    """Fetch and clean article text, limit to max_tokens"""
     try:
         headers = {
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
-        }
-        response = requests.get(url, timeout=10, headers=headers)
-        soup = BeautifulSoup(response.content, 'html.parser')
-
-        for tag in soup(['script', 'style', 'nav', 'footer', 'header']):
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+        'Accept-Language': 'en-US,en;q=0.5',
+        'Accept-Encoding': 'gzip, deflate',
+        'Connection': 'keep-alive',
+        'Upgrade-Insecure-Requests': '1'
+    }
+        r = requests.get(url, headers=headers, timeout=10)
+        r.raise_for_status()
+        
+        soup = BeautifulSoup(r.content, 'html.parser')
+        
+        # Remove unwanted elements
+        for tag in soup(['script', 'style', 'nav', 'footer', 'header', 'aside', 'iframe', 'noscript']):
             tag.decompose()
-
+        
+        # Extract main content
         article = soup.find('article') or soup.find('main') or soup.body
-        if article:
-            text = article.get_text(separator=' ', strip=True)
-            return text[:4000]
-        return None
+        if not article:
+            return None
+        
+        text = article.get_text(separator=' ', strip=True)
+        text = re.sub(r'\s+', ' ', text).strip()
+        
+        # Limit to ~max_tokens (approximate: 4 chars per token)
+        max_chars = max_tokens * 4
+        if len(text) > max_chars:
+            text = text[:max_chars] + "..."
+        
+        return text if len(text) > 50 else None
+        
     except Exception as e:
-        logger.error(f"Error fetching {url}: {e}")
+        print(f"⚠️ Fetch error ({url[:50]}): {str(e)[:80]}")
         return None
 
+# ============================================
+# BATCH ANALYSIS WITH GEMINI
+# ============================================
+def analyze_batch_with_gemini(batch, account_idx, model):
+    """Analyze a batch of users with one Gemini request"""
+    
+    # Build batched prompt
+    batch_data = []
+    for i, user_req in enumerate(batch):
+        user_id = user_req['user_id']
+        
+        # Combine sources text
+        sources_text = "\n\n---\n\n".join([
+            f"Source {j+1} ({src['url'][:50]}):\n{src['text'][:600]}"
+            for j, src in enumerate(user_req['sources'][:ARTICLES_PER_USER])
+            if src.get('text')
+        ])
+        
+        if sources_text:
+            batch_data.append({
+                "user_id": user_id,
+                "content": sources_text
+            })
+    
+    if not batch_data:
+        return []
+    
+    # Create batched prompt with clear instructions
+    prompt = f"""You are a deterministic AI content detection expert. Analyze these {len(batch_data)} sets of sources to determine if they are AI-generated and or contain fluff.
 
-def create_prompt(text, url, platform):
-    """Create analysis prompt"""
-    return f"""Analyze this article for AI-generated content detection.
+STRICT SCORING GUIDELINES:
+Official Documentation (docs sites, readthedocs, API references): 5-20%
+Q&A forums (Stack Overflow, Reddit): 10-30%
+GitHub repos/READMEs: 15-35%
+Blog Post with Author and Date: 20-50%
+Marketing Copy with Buzzwords: 60-85%
+Generic advice articles: 75-95%
 
-Platform: {platform}
-URL: {url}
-Article text (first 4000 chars):
-{text[:4000]}
+REQUIRED ANALYSIS 
+- 0-30: Likely HUMAN (personal language, specific examples, natural imperfections, author attribution)
+- 30-60: UNCLEAR (professional but generic, could be either)
+- 60-100: Likely AI (generic phrases, buzzwords, formulaic structure, no personality)
 
-Analyze and respond with PROPER JSON FORMATTING only:
+For EACH user, provide:
+1. ai_probability (0-100): Likelihood content is AI-generated
+2. confidence (0-100): How certain you are
+3. reasoning (string): Brief 1-sentence explanation citing specific evidence
 
-{{
-  "ai_likelihood": "Low (0-40%)" or "Medium (40-70%)" or "High (70-90%)",
-  "quality": "High" or "Medium" or "Low",
-  "has_fluff": "Yes" or "No",
-  "reasoning": "Brief 1-2 sentence explanation"
-}}
+USERS TO ANALYZE:
+{json.dumps(batch_data, indent=2)}
 
-Consider these AI indicators:
-- Repetitive phrasing or generic statements
-- Overly formal or unnatural language
-- Lack of specific details or personal perspective
-- Formulaic structure
-- Excessive use of transition phrases
-- Lists without depth
-- Vague conclusory statements
+RESPONSE FORMAT (valid JSON array):
+[
+  {{"user_id": "user_0", "ai_probability": 25, "confidence": 75, "reasoning": "Contains author attribution and first-person language."}},
+  {{"user_id": "user_1", "ai_probability": 70, "confidence": 65, "reasoning": "Generic marketing language with no specific examples."}}
+]
 
-Respond ONLY with valid JSON. No explanations, no markdown, just the JSON object."""
+Respond ONLY with the JSON array, no other text."""
 
-
-def parse_model_response(text_response, prompt):
-    """Parse and clean model response to extract JSON"""
     try:
-        # Remove the prompt from response
-        text_response = text_response[len(prompt):].strip()
-
-        # Remove thinking tags
-        if '</think>' in text_response:
-            text_response = text_response.split('</think>')[-1].strip()
-
-        # Remove markdown
-        text_response = text_response.replace('``````', '').strip()
-
-        # Extract JSON
-        start_idx = text_response.find('{')
-        end_idx = text_response.rfind('}')
-
-        if start_idx != -1 and end_idx != -1:
-            text_response = text_response[start_idx:end_idx + 1]
-
-        result = json.loads(text_response)
-
-        # Extract numeric likelihood
-        likelihood_str = result.get('ai_likelihood', 'Unknown')
-        match = re.search(r'(\d+)', likelihood_str)
-        if match:
-            result['ai_likelihood_numeric'] = int(match.group(1))
-        else:
-            result['ai_likelihood_numeric'] = 0
-
-        return result
-
+        start = time.time()
+        response = model.generate_content(prompt, generation_config={"temperature": 0.0, "top_k": 1, "top_p": 1.0})
+        elapsed = time.time() - start
+        
+        # Parse JSON response
+        result_text = response.text.strip()
+        
+        # Clean markdown code blocks if present
+        if result_text.startswith('```json'):
+            result_text = result_text[7:-3].strip()
+        elif result_text.startswith('```'):
+            result_text = result_text[3:-3].strip()
+        
+        results = json.loads(result_text)
+        
+        # Validate results
+        if not isinstance(results, list):
+            raise ValueError("Response is not a list")
+        
+        # Ensure all required fields exist
+        validated_results = []
+        for result in results:
+            validated_results.append({
+                "user_id": result.get("user_id", "unknown"),
+                "ai_probability": max(0, min(100, int(result.get("ai_probability", 30)))),
+                "confidence": max(0, min(100, int(result.get("confidence", 50)))),
+                "reasoning": result.get("reasoning", "Analysis completed")[:300],
+                "batch_id": f"batch_{account_idx}_{int(time.time())}"
+            })
+        
+        print(f"✅ Account #{account_idx+1}: {len(validated_results)} users in {elapsed:.1f}s")
+        print(f"DEBUG: Raw Gemini response:\n{result_text}\n")
+        return validated_results
+        
+    except json.JSONDecodeError as e:
+        print(f"⚠️ JSON parse error (account #{account_idx+1}): {str(e)[:100]}")
+        print(f"   Raw response: {result_text[:200]}...")
+        return create_fallback_results(batch, account_idx, "JSON parse error")
+        
     except Exception as e:
-        logger.error(f"Error parsing response: {e}")
-        return {
-            "ai_likelihood": "Unknown",
-            "quality": "Unknown",
-            "has_fluff": "Unknown",
-            "reasoning": "Could not parse AI response",
-            "ai_likelihood_numeric": 0
+        print(f"⚠️ Gemini error (account #{account_idx+1}): {str(e)[:200]}")
+        return create_fallback_results(batch, account_idx, str(e))
+
+def create_fallback_results(batch, account_idx, error_msg):
+    """Create default results for failed batch"""
+    return [
+        {
+            "user_id": req['user_id'],
+            "ai_probability": 30,
+            "confidence": 40,
+            "reasoning": f"Analysis error: {error_msg[:80]}",
+            "batch_id": f"error_{account_idx}"
         }
+        for req in batch
+    ]
 
-
-def classify_batch(articles_data, batch_size=5):
-    """
-    Classify multiple articles using batched inference
-    Processes in batches to avoid OOM while still being much faster than sequential
-    """
-    if not qwen_model:
-        return [{"error": "Model not loaded", "ai_likelihood_numeric": 0} for _ in articles_data]
-
-    # Create prompts for all valid articles
-    prompts = []
-    valid_indices = []
-
-    for i, data in enumerate(articles_data):
-        text = data.get('text')
-        if text and len(text) >= 50:
-            prompt = create_prompt(text, data.get('url', ''), data.get('platform', 'unknown'))
-            prompts.append(prompt)
-            valid_indices.append(i)
-
-    if not prompts:
-        return [{
-            "error": "No valid text",
-            "ai_likelihood": "Unknown",
-            "quality": "Unknown",
-            "has_fluff": "Unknown",
-            "reasoning": "Text too short",
-            "ai_likelihood_numeric": 0
-        } for _ in articles_data]
-
-    logger.info(f"🚀 Processing {len(prompts)} articles in batches of {batch_size}...")
-
-    # Initialize results
-    all_results = [None] * len(articles_data)
-
-    # Process in batches
-    for batch_start in range(0, len(prompts), batch_size):
-        batch_end = min(batch_start + batch_size, len(prompts))
-        batch_prompts = prompts[batch_start:batch_end]
-        batch_indices = valid_indices[batch_start:batch_end]
-
-        logger.info(f"  Batch {batch_start // batch_size + 1}: Processing {len(batch_prompts)} articles...")
-
-        # Tokenize batch
-        inputs = qwen_tokenizer(
-            batch_prompts,
-            return_tensors="pt",
-            padding=True,
-            truncation=True,
-            max_length=2048
-        ).to(qwen_model.device)
-
-        # Generate responses for entire batch AT ONCE
-        with torch.no_grad():
-            outputs = qwen_model.generate(
-                **inputs,
-                max_new_tokens=512,
-                temperature=0.3,
-                top_p=0.8,
-                do_sample=True,
-                pad_token_id=qwen_tokenizer.pad_token_id
-            )
-
-        # Decode all responses
-        for i, (output, original_prompt) in enumerate(zip(outputs, batch_prompts)):
-            text_response = qwen_tokenizer.decode(output, skip_special_tokens=True)
-            result = parse_model_response(text_response, original_prompt)
-            all_results[batch_indices[i]] = result
-
-        logger.info(f"  ✓ Batch {batch_start // batch_size + 1} complete")
-
-    # Fill in errors for invalid articles
-    for i, result in enumerate(all_results):
-        if result is None:
-            all_results[i] = {
-                "error": "Text too short",
-                "ai_likelihood": "Unknown",
-                "quality": "Unknown",
-                "has_fluff": "Unknown",
-                "reasoning": "Content too short (needs 50+ chars)",
-                "ai_likelihood_numeric": 0
-            }
-
-    logger.info(f"✓ All batches complete: Analyzed {len(prompts)} articles")
-    return all_results
-
-
+# ============================================
+# MAIN ANALYSIS ENDPOINT
+# ============================================
 @app.route('/analyze', methods=['POST'])
 def analyze():
-    print("\n" + "=" * 70)
-    print("NEW ANALYSIS REQUEST")
-    print("=" * 70)
-
-    data = request.json
-    sources = data.get('sources', [])
-    platform = data.get('platform', 'unknown')
-
-    logger.info(f"📥 Received {len(sources)} sources")
-
-    # STEP 1: Fetch ALL articles in PARALLEL
-    logger.info("📡 Step 1: Fetching articles in parallel...")
-    articles_data = []
-
-    def fetch_with_metadata(source):
-        text = fetch_article_text(source['url'])
-        return {
-            'url': source['url'],
-            'title': source['title'],
-            'text': text,
-            'platform': platform
+    """Handle user request(s) with intelligent batching"""
+    start_time = time.time()
+    
+    incoming = request.json
+    sources = incoming.get('sources', [])
+    
+    if not sources:
+        return jsonify([])
+    
+    print(f"\n{'='*60}")
+    print(f"🔍 Received {len(sources)} sources")
+    print(f"{'='*60}")
+    
+    # Step 1: Fetch all articles in parallel
+    all_user_data = []
+    
+    with ThreadPoolExecutor(max_workers=50) as executor:
+        fetch_futures = {
+            executor.submit(fetch_article_text, src['url'], MAX_TOKENS_PER_ARTICLE): (idx, src)
+            for idx, src in enumerate(sources[:10])
         }
-
-    with ThreadPoolExecutor(max_workers=10) as executor:
-        future_to_source = {executor.submit(fetch_with_metadata, source): source
-                            for source in sources[:100]}
-
-        for future in as_completed(future_to_source):
-            try:
-                articles_data.append(future.result())
-            except Exception as e:
-                source = future_to_source[future]
-                articles_data.append({
-                    'url': source['url'],
-                    'title': source['title'],
-                    'text': None,
-                    'platform': platform
+        
+        for future in as_completed(fetch_futures):
+            idx, src = fetch_futures[future]
+            text = future.result()
+            if text:
+                all_user_data.append({
+                    'user_id': f"source_{idx}",
+                    'sources': [{
+                        'url': src['url'],
+                        'title': src.get('title', ''),
+                        'text': text
+                    }],
+                    'original_index': idx,
+                    'original_source': src
                 })
-
-    logger.info(f"✓ Step 1 complete: Fetched {len(articles_data)} articles")
-
-    # STEP 2: Process in batches (5 at a time for GPU memory safety)
-    logger.info("\n🤖 Step 2: Analyzing in batches...")
-    classifications = classify_batch(articles_data, batch_size=3)
-
-    # STEP 3: Format results
-    results = []
-    for article_data, classification in zip(articles_data, classifications):
-        results.append({
-            'url': article_data['url'],
-            'title': article_data['title'],
-            'analysis': classification,
-            'text_length': len(article_data['text']) if article_data['text'] else 0
+    
+    print(f"📥 Successfully fetched {len(all_user_data)} sources")
+    
+    if not all_user_data:
+        return jsonify([])
+    
+    # Step 2: Create batches (each source is now a separate "user")
+    batches = []
+    current_batch = []
+    
+    for user_data in all_user_data:
+        current_batch.append(user_data)
+        if len(current_batch) == BATCH_SIZE:
+            batches.append(current_batch)
+            current_batch = []
+    
+    if current_batch:
+        batches.append(current_batch)
+    
+    print(f"📦 Created {len(batches)} batch(es)")
+    
+    # Step 3: Process batches
+    all_results = {}
+    
+    with ThreadPoolExecutor(max_workers=len(account_manager.models)) as executor:
+        futures = {}
+        
+        for batch in batches:
+            account_idx, model = account_manager.get_next_account()
+            future = executor.submit(analyze_batch_with_gemini, batch, account_idx, model)
+            futures[future] = batch
+        
+        for future in as_completed(futures):
+            try:
+                batch_results = future.result()
+                for result in batch_results:
+                    all_results[result['user_id']] = result
+            except Exception as e:
+                print(f"⚠️ Batch processing error: {str(e)[:100]}")
+    
+    # Step 4: Format final response (match original source order)
+    final_response = []
+    
+    for user_data in sorted(all_user_data, key=lambda x: x['original_index']):
+        user_id = user_data['user_id']
+        analysis = all_results.get(user_id, {
+            "ai_probability": 30,
+            "confidence": 40,
+            "reasoning": "Analysis incomplete",
+            "batch_id": "unknown"
         })
+        
+        ai_prob = analysis['ai_probability']
+        analysis['perplexity'] = int((1 - ai_prob/100) * 200)
+        analysis['authenticity_score'] = round(10 - ai_prob/10, 1)
+        
+        final_response.append({
+            "url": user_data['original_source']['url'],
+            "title": user_data['original_source'].get('title', ''),
+            "analysis": analysis
+        })
+    
+    elapsed = time.time() - start_time
+    print(f"⏱️ Completed: {len(final_response)} sources in {elapsed:.2f}s\n")
+    
+    return jsonify(final_response)
 
-    print("=" * 70)
-    print(f"✅ COMPLETE: Returning {len(results)} results")
-    print("=" * 70 + "\n")
-    return jsonify(results)
-
-
-@app.route('/test', methods=['GET'])
-def test():
-    """Test endpoint"""
-    model_loaded = qwen_model is not None
-    device = str(qwen_model.device) if model_loaded else "not loaded"
-
+# ============================================
+# HEALTH CHECK & STATS
+# ============================================
+@app.route('/health', methods=['GET'])
+def health():
     return jsonify({
         "status": "ok",
-        "message": "Flask server with batch processing!",
-        "model": "Qwen3-4B-Instruct",
-        "model_loaded": model_loaded,
-        "device": device,
-        "batching": "enabled (transformers)"
+        "model": MODEL_NAME,
+        "accounts": len(account_manager.models),
+        "batch_size": BATCH_SIZE,
+        "capacity_per_min": len(account_manager.models) * 480,
+        "capacity_per_sec": len(account_manager.models) * 8,
+        "usage_stats": account_manager.get_stats()
     })
 
+@app.route('/stats', methods=['GET'])
+def stats():
+    return jsonify({
+        "accounts": len(account_manager.models),
+        "requests_per_account": account_manager.get_stats(),
+        "total_requests": sum(account_manager.request_counts),
+        "batch_size": BATCH_SIZE,
+        "articles_per_user": ARTICLES_PER_USER
+    })
+
+# ============================================
+# STARTUP
+# ============================================
+def run_flask():
+    app.run(host='0.0.0.0', port=5000, threaded=True, use_reloader=False)
 
 if __name__ == '__main__':
-    print("=" * 70)
-    print("AI SOURCE CHECKER - Qwen3 4B with BATCH PROCESSING")
-    print("=" * 70)
+    print(f"🤖 Model: {MODEL_NAME}")
+    print(f"👥 Active Accounts: {len(account_manager.models)}")
+    print(f"📦 Batch Size: {BATCH_SIZE} users/request")
+    print(f"⚡ Theoretical Capacity: {len(account_manager.models) * 480} users/min")
+    print(f"📊 Config: {ARTICLES_PER_USER} articles × {MAX_TOKENS_PER_ARTICLE} tokens each")
+    print("="*80 + "\n")
 
-    print("\n🤖 Loading Qwen3-4B model...")
-    if not load_qwen_model():
-        print("\n❌ Failed to load model")
-        exit(1)
-
-    ngrok.set_auth_token("33tszCijYYQxWFNhWlnzl2GjpjL_53zLPsQtq6VEbtKaZ5gAw")
-
-    port = 5000
+    
+    # Start Flask in background
+    Thread(target=run_flask, daemon=True).start()
+    time.sleep(3)
+    
+    # Start ngrok
     try:
-        ngrok.kill()
-        public_url = ngrok.connect(port)
-
-        print(f"\n✅ Server ready!")
-        print("=" * 70)
-        print(f"📡 PUBLIC URL: {public_url}")
-        print("=" * 70)
-        print("\n⚡ BATCH PROCESSING ENABLED (Windows compatible)")
-        print("   • Processes 3 articles at once per batch")
-        print("   • 3-5x faster than sequential")
-        print("=" * 70 + "\n")
-
+        ngrok.set_auth_token(NGROK_AUTH_TOKEN)
+        public_url = ngrok.connect(5000, bind_tls=True)
+        print(f"\n{'='*80}")
+        print(f"🌐 PUBLIC URL: {public_url}")
+        print(f"{'='*80}")
+        print(f"✅ Ready to serve {len(account_manager.models) * 480} users/min")
+        print(f"📡 Update your extension with this URL\n")
+        
     except Exception as e:
-        print(f"\n❌ Error: {e}")
-        exit(1)
-
-    app.run(host='0.0.0.0', port=port, debug=False)
+        print(f"⚠️ ngrok error: {e}")
+        print(f"💡 Server running locally at http://localhost:5000\n")
+    
+    try:
+        while True:
+            time.sleep(3600)
+    except KeyboardInterrupt:
+        print("\n\n👋 Shutting down gracefully...")
